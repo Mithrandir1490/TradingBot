@@ -22,11 +22,38 @@ LOG_PATH = "bot_log.csv"
 
 # TICKERS (TSMC corregido -> TSM)
 TICKERS = [
-    "NVDA","MU","META","MSFT","GOOG","AMZN","AVGO","PLTR","TSM","ASML",
-    "XOM","VST","AAPL","NFLX","JNJ","NEE","HOOD","SHM","CVX","ALAB",
+    # --- Base original ---
+    "NVDA","MU","META","MSFT","GOOG","AMZN","AAPL","ASML","TSM","AVGO",
+    "PLTR","PANW","XOM","VST","NFLX","JNJ","NEE","HOOD","CVX",
     "JPM","SHOP","AMD","ORCL","TEM","V","GEV",
-    "AMAT","LRCX","UNH","ABBV","COST","SLB","CAT","DE","PANW","MSCI"
+    "AMAT","LRCX","UNH","ABBV","COST","SLB","CAT","DE","MSCI",
+
+    # --- Nuevos (sin duplicados) ---
+    "GOOGL",
+    "BRK-B",
+    "BLK",
+    "WMT",
+    "WALMEX.MX",
+    "LLY",
+    "TSLA",
+    "CRWD",
+    "ZS",
+    "DDOG",
+    "VRT",
+    "MRVL",
+    "KLAC",
+    "AVAV",
+    "NOW",
+    "FTNT",
+    "ETN",
+    "PWR",
+    "EQIX",
+    "DLR",
+    "ADI",
+    "NXPI",
+    "ROK",
 ]
+
 
 # -------------------------
 # CORE (modelo)
