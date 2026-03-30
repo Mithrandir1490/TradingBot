@@ -27,15 +27,13 @@ BOT_CFG = {
 LOG_PATH = "bot_log.csv"
 
 # =========================
-# TICKERS (Universo Core + Nuevos)
+# TICKERS (Universo Core Expandido)
 # =========================
 TICKERS = [
-    # Base original e Institucionales
     "NVDA", "MU", "META", "MSFT", "GOOG", "AMZN", "AAPL", "ASML", "TSM", "AVGO",
     "PLTR", "PANW", "XOM", "VST", "NFLX", "JNJ", "NEE", "HOOD", "CVX",
     "JPM", "SHOP", "AMD", "ORCL", "TEM", "V", "GEV",
     "AMAT", "LRCX", "UNH", "ABBV", "COST", "SLB", "CAT", "DE", "MSCI",
-    # Nuevos y Crecimiento Estructural
     "GOOGL", "BRK-B", "BLK", "WMT", "WALMEX.MX", "LLY", "TSLA", "CRWD", "ZS", 
     "DDOG", "VRT", "MRVL", "KLAC", "AVAV", "NOW", "FTNT", "ETN", "PWR", 
     "EQIX", "DLR", "ADI", "NXPI", "ROK"
@@ -82,10 +80,8 @@ def compute_p_mk(window_hist, s_t, alpha):
     return laplace_smooth(p_hat, n, alpha)
 
 def signal_from_p(p, sell_thr, buy_thr):
-    if p < sell_thr:
-        return "SELL"
-    if p > buy_thr:
-        return "BUY"
+    if p < sell_thr: return "SELL"
+    if p > buy_thr: return "BUY"
     return "HOLD"
 
 def ensure_log_exists(path):
@@ -97,23 +93,14 @@ def append_log(path, row):
     pd.DataFrame([row]).to_csv(path, mode="a", header=False, index=False)
 
 def get_signal(ticker: str, cfg=BOT_CFG):
-    df = yf.download(
-        ticker,
-        period=cfg["download_period"],
-        interval="1d",
-        auto_adjust=False,
-        progress=False
-    )
-    if df is None or df.empty:
-        raise RuntimeError(f"No data for {ticker}")
+    df = yf.download(ticker, period=cfg["download_period"], interval="1d", auto_adjust=False, progress=False)
+    if df is None or df.empty: raise RuntimeError(f"No data for {ticker}")
 
     df = df.rename(columns=str.title)
-    # Soporte para Adj Close o Close
     target_col = "Adj Close" if "Adj Close" in df.columns else "Close"
 
     dfx = df[[target_col]].dropna().copy()
     dfx.columns = ["x"]
-
     dfx["mn"] = dfx["x"].rolling(cfg["n_ma"]).mean()
     dfx["ret1"] = dfx["x"].pct_change()
     dfx["d"] = (dfx["x"] - dfx["mn"]) / dfx["mn"]
@@ -121,144 +108,71 @@ def get_signal(ticker: str, cfg=BOT_CFG):
     dfx["up_next"] = (dfx["ret1"].shift(-1) > 0).astype(int)
     dfx = dfx.dropna().copy()
 
-    if len(dfx) < cfg["window_days"] + 5:
-        raise RuntimeError(f"Pocos datos para {ticker}")
+    if len(dfx) < cfg["window_days"] + 5: raise RuntimeError("Pocos datos")
 
     hist = dfx.iloc[-cfg["window_days"]:]
     today = hist.iloc[-1]
-
     p_mr = compute_p_mr(hist, float(today["d"]), cfg["bins"], cfg["alpha"])
     p_mk = compute_p_mk(hist, float(today["s"]), cfg["alpha"])
     p_final = cfg["w"]*p_mr + (1-cfg["w"])*p_mk
-    sig = signal_from_p(p_final, cfg["SELL_THR"], cfg["BUY_THR"])
-
-    date = str(hist.index[-1].date())
-    row = {
+    
+    return {
         "run_timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "ticker": ticker,
-        "date": date,
+        "date": str(hist.index[-1].date()),
         "p_final": round(float(p_final), 6),
-        "signal": sig
+        "signal": signal_from_p(p_final, cfg["SELL_THR"], cfg["BUY_THR"])
     }
-    return row
 
 def run_daily(tickers):
     out = []
     for t in tickers:
-        try:
-            out.append(get_signal(t))
-        except Exception:
-            continue
+        try: out.append(get_signal(t))
+        except: continue
     df = pd.DataFrame(out)
-    if df.empty:
-        return df
-    for _, r in df.iterrows():
-        append_log(LOG_PATH, r.to_dict())
+    if not df.empty:
+        for _, r in df.iterrows(): append_log(LOG_PATH, r.to_dict())
     return df
-
-# =========================
-# PDF (METODOLOGÍA)
-# =========================
-def build_methodology_pdf_bytes() -> bytes:
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        leftMargin=0.8*inch, rightMargin=0.8*inch,
-        topMargin=0.8*inch, bottomMargin=0.8*inch
-    )
-    styles = getSampleStyleSheet()
-    title = styles["Title"]
-    h2 = styles["Heading2"]
-    body = styles["BodyText"]
-    mono = styles["Code"]
-    body.leading = 14
-    mono.fontName = "Courier"
-    mono.fontSize = 9
-    mono.leading = 11
-
-    story = []
-    story.append(Paragraph("Trading Bot Core — Metodología", title))
-    story.append(Paragraph("Documento explicativo de Probabilidad Combinada", body))
-    story.append(Spacer(1, 12))
-
-    story.append(Paragraph("1. Qué hace el bot", h2))
-    story.append(Paragraph(
-        "Este modelo estima la probabilidad de que el próximo cierre sea positivo basándose en "
-        "dos factores: Reversión a la media (distancia a la MA20) y persistencia de Markov (dirección previa).",
-        body
-    ))
-    story.append(Spacer(1, 10))
-
-    story.append(Paragraph("2. Parámetros Actuales", h2))
-    story.append(Preformatted(
-        f"""W (ventana) = {BOT_CFG['window_days']} días
-n (media móvil) = {BOT_CFG['n_ma']} días
-w (peso MR) = {BOT_CFG['w']}
-alpha (Laplace) = {BOT_CFG['alpha']}""",
-        mono
-    ))
-    
-    doc.build(story)
-    return buf.getvalue()
 
 # =========================
 # UI (STREAMLIT)
 # =========================
 st.set_page_config(page_title="Bot 1: Core Signal", layout="wide")
 st.title("🤖 Bot 1 — Señal Core Original")
-st.caption("Filtro estadístico basado en Laplace y Cadenas de Markov.")
 
-# PDF Metodología
-pdf_bytes = build_methodology_pdf_bytes()
-st.download_button(
-    label="📄 Descargar Metodología PDF",
-    data=pdf_bytes,
-    file_name="Bot1_Metodologia.pdf",
-    mime="application/pdf"
-)
-
-@st.cache_data(ttl=60*15)
+@st.cache_data(ttl=900)
 def cached_run():
     return run_daily(TICKERS)
 
 with st.sidebar:
-    st.header("Umbrales")
-    st.write(f"🔴 SELL < {BOT_CFG['SELL_THR']:.2f}")
-    st.write(f"⚪ HOLD: {BOT_CFG['SELL_THR']:.2f} – {BOT_CFG['BUY_THR']:.2f}")
-    st.write(f"🟢 BUY  > {BOT_CFG['BUY_THR']:.2f}")
-    run_btn = st.button("Actualizar señales")
+    st.header("Parámetros")
+    st.write(f"🔴 SELL < {BOT_CFG['SELL_THR']}")
+    st.write(f"🟢 BUY > {BOT_CFG['BUY_THR']}")
+    if st.button("Actualizar señales"):
+        st.cache_data.clear()
+        st.rerun()
 
 df_raw = cached_run()
-if run_btn:
-    st.cache_data.clear()
-    df_raw = cached_run()
 
-if df_raw.empty:
-    st.error("No se pudieron generar señales. Verifica la conexión con Yahoo Finance.")
-    st.stop()
+if not df_raw.empty:
+    df = df_raw.rename(columns={"ticker":"Ticker","signal":"Recomendación","p_final":"Valor"})
+    df = df[["Ticker","Recomendación","Valor"]].copy()
+    
+    # Ordenar Tablas
+    buy = df[df["Recomendación"]=="BUY"].sort_values("Valor", ascending=False)
+    sell = df[df["Recomendación"]=="SELL"].sort_values("Valor", ascending=True)
+    hold = df[df["Recomendación"]=="HOLD"].sort_values("Valor", ascending=False)
+    df_final = pd.concat([buy, sell, hold], ignore_index=True)
 
-# Formateo de Tabla
-df = df_raw.rename(columns={"ticker":"Ticker","signal":"Recomendación","p_final":"Valor"})
-df = df[["Ticker","Recomendación","Valor"]].copy()
-df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce")
+    # Estilos (Aquí estaba el error del paréntesis)
+    def style_rec(val):
+        if val == "BUY": return "color: #1B7F3A; font-weight: 800;"
+        if val == "SELL": return "color: #B00020; font-weight: 800;"
+        return "color: #111111;"
 
-# Orden: BUY -> SELL -> HOLD
-buy = df[df["Recomendación"]=="BUY"].sort_values("Valor", ascending=False)
-sell = df[df["Recomendación"]=="SELL"].sort_values("Valor", ascending=True)
-hold = df[df["Recomendación"]=="HOLD"].sort_values("Valor", ascending=False)
-df_final = pd.concat([buy, sell, hold], ignore_index=True)
-
-# Estilos de Color
-def color_row(row):
-    rec = row["Recomendación"]
-    if rec == "BUY": return ["", "", "color: #1B7F3A; font-weight: 700;"]
-    if rec == "SELL": return ["", "", "color: #B00020; font-weight: 700;"]
-    return ["", "", "color: #111111;"]
-
-def color_rec_cell(val):
-    if val == "BUY": return "color: #1B7F3A; font-weight: 800;"
-    if val == "SELL": return "color: #B00020; font-weight: 800;"
-    return "color: #111111; font-weight: 700;"
-
-styled = (
+    styled_df = df_final.style.map(style_rec, subset=["Recomendación"]).format({"Valor": "{:.3f}"})
+    
+    st.subheader(f"Señales del día: {df_raw['date'].iloc[0]}")
+    st.dataframe(styled_df, use_container_width=True, height=600)
+else:
+    st.error("Error al obtener datos.")
