@@ -23,6 +23,13 @@ BOT_CFG = {
 LOG_PATH = "bot_log.csv"
 
 # ======================================================================
+# ASIGNACIÓN DE TESORERÍA ASOCIADA AL FONDO DE VELOCIDAD
+# ======================================================================
+CAPITAL_ASIGNADO_BOT1 = 2235.00      # 40% del Fondo de Velocidad Global
+PORCENTAJE_DESPLIEGUE_DIARIO = 0.10  # Capacidad de despliegue diario (10%)
+presupuesto_diario_bot1 = CAPITAL_ASIGNADO_BOT1 * PORCENTAJE_DESPLIEGUE_DIARIO
+
+# ======================================================================
 # UNIVERSO SELECCIONADO QUIRÚRGICAMENTE (Filtrado del Universo Base de 238)
 # ======================================================================
 TICKERS = [
@@ -140,7 +147,7 @@ def run_daily(tickers):
     return df
 
 # ======================================================================
-# INTERFAZ VISUAL PROFESIONAL (STREAMLIT MULTIPÁGINA COMPATIBLE)
+# INTERFAZ VISUAL PROFESIONAL Y ASIGNACIÓN AUTOMÁTICA DE TESORERÍA
 # ======================================================================
 st.set_page_config(page_title="Bot 1: Core Signal EMA", layout="wide")
 
@@ -156,7 +163,10 @@ with st.sidebar:
     st.markdown(f"🔴 **SELL THR:** < {BOT_CFG['SELL_THR']:.2f}")
     st.markdown(f"🟢 **BUY THR:** > {BOT_CFG['BUY_THR']:.2f}")
     st.markdown(f"⏱️ **Hard Time Cut:** {BOT_CFG['hard_cut_days']} Días Naturales")
-    st.markdown("---")
+    st.divider()
+    st.metric("Fondo Total Asignado", f"${CAPITAL_ASIGNADO_BOT1:,.2f} USD")
+    st.metric("Presupuesto Despliegue Hoy (10%)", f"${presupuesto_diario_bot1:,.2f} USD")
+    st.divider()
     if st.button("Actualizar señales", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -167,51 +177,60 @@ if df_raw is not None and not df_raw.empty:
     df = df_raw.rename(columns={"ticker":"Ticker","signal":"Recomendación","p_final":"Valor Probabilístico"})
     df = df[["Ticker","Recomendación","Valor Probabilístico"]].copy()
     
-    # MEJORA INYECTADA: Inicializar columna de presupuesto en 0.0%
+    # Inicialización de columnas métricas de asignación
     df["Asignar presupuesto en este porcentaje"] = 0.0
+    df["Monto de Compra (USD)"] = 0.0
     
-    # Filtrar exclusivamente los BUYS activos del día
     buys_idx = df["Recomendación"] == "BUY"
     n_buys = buys_idx.sum()
     
     if n_buys > 0:
-        # Calcular el exceso de confianza matemática por encima del umbral mínimo (BUY_THR)
+        # Medición del exceso de confianza estocástica sobre el umbral mínimo de compra
         exceso_conviccion = df.loc[buys_idx, "Valor Probabilístico"] - BOT_CFG["BUY_THR"]
         sum_exceso = exceso_conviccion.sum()
         
-        # En el caso extremo de que todas las señales tengan exactamente el mismo valor probabilístico base
         if sum_exceso == 0:
             df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (1.0 / n_buys) * 100
         else:
-            # Distribución proporcional normalizada: la suma total es exactamente 100%
             df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (exceso_conviccion / sum_exceso) * 100
+            
+        # Distribución automática del presupuesto fijo del día ($223.50 USD)
+        df.loc[buys_idx, "Monto de Compra (USD)"] = (df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] / 100) * presupuesto_diario_bot1
 
-    # Separar y priorizar tablas para la visualización ejecutiva
+    # Separación y priorización por tipo de señal para visualización ejecutiva
     buy = df[df["Recomendación"]=="BUY"].sort_values("Valor Probabilístico", ascending=False)
     sell = df[df["Recomendación"]=="SELL"].sort_values("Valor Probabilístico", ascending=True)
     hold = df[df["Recomendación"]=="HOLD"].sort_values("Valor Probabilístico", ascending=False)
     df_final = pd.concat([buy, sell, hold], ignore_index=True)
 
-    # Alerta de Control Actuarial en la UI
-    st.warning(f"⚠️ **DIRECTRIZ DE CONTROL ACTUARIAL:** Todo trade ejecutado bajo la señal de este bot DEBE ser liquidado al mercado de forma inflexible a más tardar el **Día Natural 7** ({BOT_CFG['hard_cut_days']} días desde la señal). Retener operaciones perdedoras destruye el edge predictivo del modelo (Win Rate decae de 98.6% a 58.5%).")
+    # Bloque normativo de UI
+    st.warning(f"⚠️ **DIRECTRIZ DE CONTROL ACTUARIAL:** Todo trade ejecutado bajo la señal de este bot DEBE ser liquidado al mercado de forma inflexible a más tardar el **Día Natural 7**. Presupuesto máximo de despliegue para hoy: ${presupuesto_diario_bot1:.2f} USD.")
 
+    if n_buys > 0:
+        st.success(f"🎯 **ÓRDENES DE COMPRA DETECTADAS:** Distribución proporcional de los ${presupuesto_diario_bot1:.2f} USD asignados para la jornada.")
+    else:
+        st.info(f"🔮 **FONDO RETENIDO:** Hoy no hay señales de compra activas en el Bot 1. El presupuesto diario de **${presupuesto_diario_bot1:.2f} USD** se mantiene líquido en tesorería para evitar sobre-operación.")
+
+    # Estilos CSS condicionales de nivel institucional
     def style_rec(row):
         styles = [''] * len(row)
         val = row["Recomendación"]
         idx_rec = row.index.get_loc("Recomendación")
         idx_pct = row.index.get_loc("Asignar presupuesto en este porcentaje")
+        idx_usd = row.index.get_loc("Monto de Compra (USD)")
         
         if val == "BUY":
             styles[idx_rec] = "background-color: #f0fff4; color: #1b7f3a; font-weight: 800; border-left: 4px solid #1b7f3a;"
             styles[idx_pct] = "background-color: #e6fffa; color: #004d40; font-weight: bold;"
+            styles[idx_usd] = "background-color: #e6fffa; color: #004d40; font-weight: bold;"
         elif val == "SELL":
             styles[idx_rec] = "background-color: #fff5f5; color: #b00020; font-weight: 800; border-left: 4px solid #b00020;"
         return styles
 
-    # Aplicar formatos específicos por columna: decimales para la Probabilidad y porcentaje para el Presupuesto
     styled_df = df_final.style.apply(style_rec, axis=1).format({
         "Valor Probabilístico": "{:.4f}",
-        "Asignar presupuesto en este porcentaje": "{:.1f}%"
+        "Asignar presupuesto en este porcentaje": "{:.1f}%",
+        "Monto de Compra (USD)": "${:.2f}"
     })
     
     st.subheader(f"📊 Escalafón de Señales y Gestión de Capital Normalizada: {df_raw['date'].iloc[0]}")
