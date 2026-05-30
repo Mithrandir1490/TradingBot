@@ -22,12 +22,8 @@ BOT_CFG = {
 }
 LOG_PATH = "bot_log.csv"
 
-# ======================================================================
-# ASIGNACIÓN DE TESORERÍA ASOCIADA AL FONDO DE VELOCIDAD
-# ======================================================================
-CAPITAL_ASIGNADO_BOT1 = 2235.00      # 40% del Fondo de Velocidad Global
-PORCENTAJE_DESPLIEGUE_DIARIO = 0.10  # Capacidad de despliegue diario (10%)
-presupuesto_diario_bot1 = CAPITAL_ASIGNADO_BOT1 * PORCENTAJE_DESPLIEGUE_DIARIO
+# MINIMO PERMITIDO POR ORDEN (Establecido institucionalmente en $10 USD)
+MIN_USD_PER_ORDER = 10.0
 
 # ======================================================================
 # UNIVERSO SELECCIONADO QUIRÚRGICAMENTE (Filtrado del Universo Base de 238)
@@ -111,7 +107,7 @@ def get_signal(ticker: str, cfg=BOT_CFG):
     dfx = df[[target_col]].dropna().copy()
     dfx.columns = ["x"]
     
-    # MEJORA ALGORÍTMICA: EMA en lugar de SMA para atrapar el cambio marginal de tendencia sin retraso
+    # EMA en lugar de SMA para atrapar el cambio marginal de tendencia sin retraso
     dfx["mn"] = dfx["x"].ewm(span=cfg["n_ma"], adjust=False).mean()
     
     dfx["ret1"] = dfx["x"].pct_change()
@@ -164,8 +160,9 @@ with st.sidebar:
     st.markdown(f"🟢 **BUY THR:** > {BOT_CFG['BUY_THR']:.2f}")
     st.markdown(f"⏱️ **Hard Time Cut:** {BOT_CFG['hard_cut_days']} Días Naturales")
     st.divider()
-    st.metric("Fondo Total Asignado", f"${CAPITAL_ASIGNADO_BOT1:,.2f} USD")
-    st.metric("Presupuesto Despliegue Hoy (10%)", f"${presupuesto_diario_bot1:,.2f} USD")
+    
+    # MEJORA ACCESIBLE: El presupuesto de despliegue queda abierto para los socios (Default: Santiago's allocation)
+    presupuesto_diario_bot1 = st.number_input("Presupuesto de Despliegue Hoy (USD)", value=223.50, step=50.0)
     st.divider()
     if st.button("Actualizar señales", use_container_width=True):
         st.cache_data.clear()
@@ -185,17 +182,49 @@ if df_raw is not None and not df_raw.empty:
     n_buys = buys_idx.sum()
     
     if n_buys > 0:
-        # Medición del exceso de confianza estocástica sobre el umbral mínimo de compra
+        # 1. Medición del exceso de confianza estocástica
         exceso_conviccion = df.loc[buys_idx, "Valor Probabilístico"] - BOT_CFG["BUY_THR"]
         sum_exceso = exceso_conviccion.sum()
         
+        # 2. Asignación Proporcional Inicial Base
         if sum_exceso == 0:
-            df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (1.0 / n_buys) * 100
+            df.loc[buys_idx, "Monto de Compra (USD)"] = presupuesto_diario_bot1 / n_buys
         else:
-            df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (exceso_conviccion / sum_exceso) * 100
+            proporciones_base = exceso_conviccion / sum_exceso
+            df.loc[buys_idx, "Monto de Compra (USD)"] = proporciones_base * presupuesto_diario_bot1
             
-        # Distribución automática del presupuesto fijo del día ($223.50 USD)
-        df.loc[buys_idx, "Monto de Compra (USD)"] = (df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] / 100) * presupuesto_diario_bot1
+        # ==================================================================
+        # ALGORITMO DE OPTIMIZACIÓN CON RESTRICCIÓN DE PISO INSTITUCIONAL ($10 USD)
+        # ==================================================================
+        # Si el presupuesto total ingresado por el socio es suficiente para cubrir el piso de todos los buys
+        if presupuesto_diario_bot1 >= (n_buys * MIN_USD_PER_ORDER):
+            monto_insuficiente = True
+            while monto_insuficiente:
+                buys_activos = df[df["Recomendación"] == "BUY"]
+                # Detectar si alguna orden proporcional quedó por debajo de los $10 USD mínimos
+                bajo_piso_idx = (df["Recomendación"] == "BUY") & (df["Monto de Compra (USD)"] < MIN_USD_PER_ORDER) & (df["Monto de Compra (USD)"] > 0)
+                
+                if bajo_piso_idx.any():
+                    # Forzar los $10 USD exactos a los que quedaron rezagados
+                    df.loc[bajo_piso_idx, "Monto de Compra (USD)"] = MIN_USD_PER_ORDER
+                    
+                    # Calcular cuántos fondos quedan disponibles y qué tickers aún no están topados en el mínimo
+                    fondos_asignados_fijos = df[df["Monto de Compra (USD)"] == MIN_USD_PER_ORDER]["Monto de Compra (USD)"].sum()
+                    presupuesto_restante = presupuesto_diario_bot1 - fondos_asignados_fijos
+                    
+                    sobre_piso_idx = (df["Recomendación"] == "BUY") & (df["Monto de Compra (USD)"] > MIN_USD_PER_ORDER)
+                    
+                    if sobre_piso_idx.any() and presupuesto_restante > 0:
+                        # Redistribuir el remanente proporcionalmente entre las señales de mayor convicción
+                        exceso_restante = df.loc[sobre_piso_idx, "Valor Probabilístico"] - BOT_CFG["BUY_THR"]
+                        df.loc[sobre_piso_idx, "Monto de Compra (USD)"] = (exceso_restante / exceso_restante.sum()) * presupuesto_restante
+                    else:
+                        monto_insuficiente = False
+                else:
+                    monto_insuficiente = False
+                    
+        # 3. Calcular la columna de Porcentaje final normalizado reflejando los ajustes de piso
+        df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (df.loc[buys_idx, "Monto de Compra (USD)"] / presupuesto_diario_bot1) * 100
 
     # Separación y priorización por tipo de señal para visualización ejecutiva
     buy = df[df["Recomendación"]=="BUY"].sort_values("Valor Probabilístico", ascending=False)
@@ -204,12 +233,12 @@ if df_raw is not None and not df_raw.empty:
     df_final = pd.concat([buy, sell, hold], ignore_index=True)
 
     # Bloque normativo de UI
-    st.warning(f"⚠️ **DIRECTRIZ DE CONTROL ACTUARIAL:** Todo trade ejecutado bajo la señal de este bot DEBE ser liquidado al mercado de forma inflexible a más tardar el **Día Natural 7**. Presupuesto máximo de despliegue para hoy: ${presupuesto_diario_bot1:.2f} USD.")
+    st.warning(f"⚠️ **DIRECTRIZ DE CONTROL ACTUARIAL:** Todo trade ejecutado bajo la señal de este bot DEBE ser liquidado al mercado de forma inflexible a más tardar el **Día Natural 7**. Presupuesto configurado para hoy: ${presupuesto_diario_bot1:.2f} USD.")
 
     if n_buys > 0:
-        st.success(f"🎯 **ÓRDENES DE COMPRA DETECTADAS:** Distribución proporcional de los ${presupuesto_diario_bot1:.2f} USD asignados para la jornada.")
+        st.success(f"🎯 **ÓRDENES DE COMPRA DETECTADAS:** Distribución de los ${presupuesto_diario_bot1:.2f} USD ejecutada. Restricción de asignación mínima de $10.00 USD activa.")
     else:
-        st.info(f"🔮 **FONDO RETENIDO:** Hoy no hay señales de compra activas en el Bot 1. El presupuesto diario de **${presupuesto_diario_bot1:.2f} USD** se mantiene líquido en tesorería para evitar sobre-operación.")
+        st.info(f"🔮 **FONDO RETENIDO:** Hoy no hay señales de compra activas en el Bot 1. El presupuesto configurado de **${presupuesto_diario_bot1:.2f} USD** se mantiene líquido en tesorería para evitar sobre-operación.")
 
     # Estilos CSS condicionales de nivel institucional
     def style_rec(row):
