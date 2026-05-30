@@ -167,23 +167,54 @@ if df_raw is not None and not df_raw.empty:
     df = df_raw.rename(columns={"ticker":"Ticker","signal":"Recomendación","p_final":"Valor Probabilístico"})
     df = df[["Ticker","Recomendación","Valor Probabilístico"]].copy()
     
-    # Separar y priorizar tablas
+    # MEJORA INYECTADA: Inicializar columna de presupuesto en 0.0%
+    df["Asignar presupuesto en este porcentaje"] = 0.0
+    
+    # Filtrar exclusivamente los BUYS activos del día
+    buys_idx = df["Recomendación"] == "BUY"
+    n_buys = buys_idx.sum()
+    
+    if n_buys > 0:
+        # Calcular el exceso de confianza matemática por encima del umbral mínimo (BUY_THR)
+        exceso_conviccion = df.loc[buys_idx, "Valor Probabilístico"] - BOT_CFG["BUY_THR"]
+        sum_exceso = exceso_conviccion.sum()
+        
+        # En el caso extremo de que todas las señales tengan exactamente el mismo valor probabilístico base
+        if sum_exceso == 0:
+            df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (1.0 / n_buys) * 100
+        else:
+            # Distribución proporcional normalizada: la suma total es exactamente 100%
+            df.loc[buys_idx, "Asignar presupuesto en este porcentaje"] = (exceso_conviccion / sum_exceso) * 100
+
+    # Separar y priorizar tablas para la visualización ejecutiva
     buy = df[df["Recomendación"]=="BUY"].sort_values("Valor Probabilístico", ascending=False)
     sell = df[df["Recomendación"]=="SELL"].sort_values("Valor Probabilístico", ascending=True)
     hold = df[df["Recomendación"]=="HOLD"].sort_values("Valor Probabilístico", ascending=False)
     df_final = pd.concat([buy, sell, hold], ignore_index=True)
 
-    # Inyección de estilos CSS de nivel institucional para el control de riesgos
+    # Alerta de Control Actuarial en la UI
     st.warning(f"⚠️ **DIRECTRIZ DE CONTROL ACTUARIAL:** Todo trade ejecutado bajo la señal de este bot DEBE ser liquidado al mercado de forma inflexible a más tardar el **Día Natural 7** ({BOT_CFG['hard_cut_days']} días desde la señal). Retener operaciones perdedoras destruye el edge predictivo del modelo (Win Rate decae de 98.6% a 58.5%).")
 
-    def style_rec(val):
-        if val == "BUY": return "background-color: #f0fff4; color: #1b7f3a; font-weight: 800; border-left: 4px solid #1b7f3a;"
-        if val == "SELL": return "background-color: #fff5f5; color: #b00020; font-weight: 800; border-left: 4px solid #b00020;"
-        return "color: #4a5568;"
+    def style_rec(row):
+        styles = [''] * len(row)
+        val = row["Recomendación"]
+        idx_rec = row.index.get_loc("Recomendación")
+        idx_pct = row.index.get_loc("Asignar presupuesto en este porcentaje")
+        
+        if val == "BUY":
+            styles[idx_rec] = "background-color: #f0fff4; color: #1b7f3a; font-weight: 800; border-left: 4px solid #1b7f3a;"
+            styles[idx_pct] = "background-color: #e6fffa; color: #004d40; font-weight: bold;"
+        elif val == "SELL":
+            styles[idx_rec] = "background-color: #fff5f5; color: #b00020; font-weight: 800; border-left: 4px solid #b00020;"
+        return styles
 
-    styled_df = df_final.style.map(style_rec, subset=["Recomendación"]).format({"Valor Probabilístico": "{:.4f}"})
+    # Aplicar formatos específicos por columna: decimales para la Probabilidad y porcentaje para el Presupuesto
+    styled_df = df_final.style.apply(style_rec, axis=1).format({
+        "Valor Probabilístico": "{:.4f}",
+        "Asignar presupuesto en este porcentaje": "{:.1f}%"
+    })
     
-    st.subheader(f"📊 Escalafón de Señales Calculadas: {df_raw['date'].iloc[0]}")
+    st.subheader(f"📊 Escalafón de Señales y Gestión de Capital Normalizada: {df_raw['date'].iloc[0]}")
     st.dataframe(styled_df, use_container_width=True, height=650, hide_index=True)
 else:
     st.error("Error al obtener los datos de la API financiera.")
